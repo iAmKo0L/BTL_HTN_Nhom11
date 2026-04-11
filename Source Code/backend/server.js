@@ -9,16 +9,80 @@ const fs = require('fs-extra');
 const path = require('path');
 const mqtt = require('mqtt');
 const os = require('os');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 const PORT = 3000;
 const MQTT_PORT = 1883;
 const WS_PORT = 8888;
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// ==================== SQLite Auth Database ====================
+const dataDir = path.join(__dirname, 'data');
+fs.ensureDirSync(dataDir);
+
+const dbPath = path.join(dataDir, 'app.db');
+const db = new sqlite3.Database(dbPath);
+
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+});
+
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) reject(err);
+      else resolve(this);
+    });
+  });
+}
+
+function createToken(user) {
+  return jwt.sign(
+    { id: user.id, username: user.username },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+}
+
+function authenticateToken(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Missing token' });
+  }
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch (error) {
+    return res.status(401).json({ success: false, error: 'Invalid token' });
+  }
+}
 
 // Tạo thư mục lưu firmware
 const firmwareDir = path.join(__dirname, 'firmware');
@@ -43,6 +107,72 @@ const upload = multer({
 // Lưu trữ dữ liệu thiết bị
 const devices = new Map();
 const deviceStatus = new Map();
+
+// ==================== AUTH API ====================
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: 'Thiếu username hoặc password' });
+    }
+
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, error: 'Mật khẩu phải có ít nhất 6 ký tự' });
+    }
+
+    const exists = await dbGet('SELECT id FROM users WHERE username = ?', [username.trim()]);
+    if (exists) {
+      return res.status(409).json({ success: false, error: 'Username đã tồn tại' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const result = await dbRun(
+      'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+      [username.trim(), passwordHash]
+    );
+
+    const user = { id: result.lastID, username: username.trim() };
+    const token = createToken(user);
+
+    res.json({ success: true, token, user });
+  } catch (error) {
+    console.error('[AUTH] Register error:', error);
+    res.status(500).json({ success: false, error: 'Lỗi đăng ký' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: 'Thiếu username hoặc password' });
+    }
+
+    const user = await dbGet('SELECT * FROM users WHERE username = ?', [username.trim()]);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+    }
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+    }
+
+    const payload = { id: user.id, username: user.username };
+    const token = createToken(payload);
+
+    res.json({ success: true, token, user: payload });
+  } catch (error) {
+    console.error('[AUTH] Login error:', error);
+    res.status(500).json({ success: false, error: 'Lỗi đăng nhập' });
+  }
+});
+
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+  res.json({ success: true, user: req.user });
+});
 
 // ==================== MQTT Broker ====================
 const mqttServer = net.createServer(aedes.handle);
@@ -189,7 +319,7 @@ function broadcastToWebSocket(data) {
 // ==================== REST API ====================
 
 // API: Lấy danh sách thiết bị
-app.get('/api/devices', (req, res) => {
+app.get('/api/devices', authenticateToken, (req, res) => {
   const deviceList = Array.from(deviceStatus.entries()).map(([id, data]) => ({
     deviceId: id,
     ...data
@@ -198,7 +328,7 @@ app.get('/api/devices', (req, res) => {
 });
 
 // API: Lấy trạng thái thiết bị
-app.get('/api/devices/:deviceId', (req, res) => {
+app.get('/api/devices/:deviceId', authenticateToken, (req, res) => {
   const status = deviceStatus.get(req.params.deviceId);
   if (status) {
     res.json(status);
@@ -208,7 +338,7 @@ app.get('/api/devices/:deviceId', (req, res) => {
 });
 
 // API: Điều khiển thiết bị
-app.post('/api/devices/:deviceId/control', (req, res) => {
+app.post('/api/devices/:deviceId/control', authenticateToken, (req, res) => {
   const { deviceId } = req.params;
   const { relay1, relay2, window, autoManual, threshold } = req.body;
   
@@ -231,7 +361,7 @@ app.post('/api/devices/:deviceId/control', (req, res) => {
 });
 
 // API: Upload firmware
-app.post('/api/firmware/upload', upload.single('firmware'), (req, res) => {
+app.post('/api/firmware/upload', authenticateToken, upload.single('firmware'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No firmware file uploaded' });
   }
@@ -259,7 +389,7 @@ app.post('/api/firmware/upload', upload.single('firmware'), (req, res) => {
 });
 
 // API: Lấy danh sách firmware
-app.get('/api/firmware', (req, res) => {
+app.get('/api/firmware', authenticateToken, (req, res) => {
   const files = fs.readdirSync(firmwareDir);
   const firmwareList = files
     .filter(f => f.startsWith('metadata_'))
@@ -346,7 +476,7 @@ function getServerIP() {
 }
 
 // API: Gửi lệnh OTA update
-app.post('/api/devices/:deviceId/ota', (req, res) => {
+app.post('/api/devices/:deviceId/ota', authenticateToken, (req, res) => {
   const { deviceId } = req.params;
   const { version, url } = req.body;
   

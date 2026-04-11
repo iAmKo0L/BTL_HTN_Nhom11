@@ -10,9 +10,12 @@
     <div class="container">
         <header>
             <h1>🔥 Hệ Thống Phát Hiện Khí Gas & Lửa</h1>
-            <div class="connection-status" id="connectionStatus">
-                <span class="status-dot"></span>
-                <span id="statusText">Đang kết nối...</span>
+            <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-dot"></span>
+                    <span id="statusText">Đang kết nối...</span>
+                </div>
+                <button class="btn-secondary" onclick="logout()">Đăng xuất</button>
             </div>
         </header>
 

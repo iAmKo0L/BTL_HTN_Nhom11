@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Đăng nhập / Đăng ký</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f7fb;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+        }
+        .card {
+            width: 100%;
+            max-width: 420px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+            padding: 28px;
+        }
+        h1 {
+            margin-bottom: 8px;
+            color: #667eea;
+            font-size: 28px;
+        }
+        p {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        input, button {
+            width: 100%;
+            padding: 12px 14px;
+            margin-top: 10px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            font-size: 15px;
+            box-sizing: border-box;
+        }
+        button {
+            cursor: pointer;
+            border: none;
+            color: white;
+            background: #667eea;
+            font-weight: 600;
+        }
+        button.secondary {
+            background: #6c757d;
+        }
+        .row {
+            display: flex;
+            gap: 10px;
+        }
+        .row button {
+            width: 50%;
+        }
+        .msg {
+            margin-top: 12px;
+            min-height: 22px;
+            font-size: 14px;
+        }
+        .tab-btn {
+            opacity: 0.85;
+        }
+        .tab-btn.active {
+            opacity: 1;
+            box-shadow: 0 4px 12px rgba(102,126,234,0.25);
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Hệ thống IoT</h1>
+        <p id="subtitle">Đăng nhập hệ thống</p>
+
+        <div class="row">
+            <button id="loginTab" class="tab-btn active" onclick="setMode('login')">Đăng nhập</button>
+            <button id="registerTab" class="tab-btn secondary" onclick="setMode('register')">Đăng ký</button>
+        </div>
+
+        <input id="username" type="text" placeholder="Username">
+        <input id="password" type="password" placeholder="Mật khẩu">
+        <input id="confirmPassword" class="hidden" type="password" placeholder="Nhập lại mật khẩu">
+
+        <button id="submitBtn" onclick="submitAuth()">Đăng nhập</button>
+
+        <div id="msg" class="msg"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        let mode = 'login';
+
+        function setMsg(text, color = '#333') {
+            const msg = document.getElementById('msg');
+            msg.textContent = text;
+            msg.style.color = color;
+        }
+
+        function setMode(newMode) {
+            mode = newMode;
+            const isRegister = mode === 'register';
+
+            const confirmInput = document.getElementById('confirmPassword');
+            const submitBtn = document.getElementById('submitBtn');
+            const subtitle = document.getElementById('subtitle');
+            const loginTab = document.getElementById('loginTab');
+            const registerTab = document.getElementById('registerTab');
+
+            confirmInput.classList.toggle('hidden', !isRegister);
+            submitBtn.textContent = isRegister ? 'Tạo tài khoản' : 'Đăng nhập';
+            subtitle.textContent = isRegister ? 'Tạo tài khoản mới' : 'Đăng nhập hệ thống';
+
+            loginTab.classList.toggle('active', !isRegister);
+            registerTab.classList.toggle('active', isRegister);
+            setMsg('');
+        }
+
+        function submitAuth() {
+            if (mode === 'register') {
+                return registerUser();
+            }
+            return login();
+        }
+
+        async function registerUser() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+
+            if (!username || !password || !confirmPassword) {
+                return setMsg('Vui lòng nhập đầy đủ thông tin', '#d32f2f');
+            }
+
+            if (password !== confirmPassword) {
+                return setMsg('Mật khẩu nhập lại không khớp', '#d32f2f');
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    return setMsg(data.error || 'Đăng ký thất bại', '#d32f2f');
+                }
+
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                window.location.href = './index.html';
+            } catch (error) {
+                setMsg('Lỗi kết nối máy chủ', '#d32f2f');
+            }
+        }
+
+        async function login() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                return setMsg('Vui lòng nhập username và mật khẩu', '#d32f2f');
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (!data.success) {
+                    return setMsg(data.error || 'Đăng nhập thất bại', '#d32f2f');
+                }
+
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                window.location.href = './index.html';
+            } catch (error) {
+                setMsg('Lỗi kết nối máy chủ', '#d32f2f');
+            }
+        }
+
+        if (localStorage.getItem('token')) {
+            window.location.href = './index.html';
+        }
+
+        setMode('login');
+    </script>
+</body>
+</html>

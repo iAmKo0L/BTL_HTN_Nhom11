@@ -1,10 +1,32 @@
 // WebSocket connection
 const WS_URL = 'ws://localhost:8888';
 const API_URL = 'http://localhost:3000/api';
+const token = localStorage.getItem('token');
+
+if (!token && !window.location.pathname.endsWith('auth.html')) {
+    window.location.href = './auth.html';
+}
 
 let ws = null;
 let currentDeviceId = null;
 let deviceStatus = {};
+
+function authHeaders(extra = {}) {
+    return {
+        ...extra,
+        Authorization: `Bearer ${token}`
+    };
+}
+
+function handleAuthFailure(response) {
+    if (response && response.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = './auth.html';
+        return true;
+    }
+    return false;
+}
 
 // Initialize WebSocket connection
 function initWebSocket() {
@@ -140,7 +162,10 @@ document.getElementById('deviceSelect').addEventListener('change', (e) => {
 
 async function loadDeviceStatus(deviceId) {
     try {
-        const response = await fetch(`${API_URL}/devices/${deviceId}`);
+        const response = await fetch(`${API_URL}/devices/${deviceId}`, {
+            headers: authHeaders()
+        });
+        if (handleAuthFailure(response)) return;
         const data = await response.json();
         updateDeviceData(data);
     } catch (error) {
@@ -235,9 +260,17 @@ function sendControlCommand(command) {
         // Fallback to HTTP API
         fetch(`${API_URL}/devices/${currentDeviceId}/control`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(command)
-        }).catch(error => {
+        })
+        .then(response => {
+            if (handleAuthFailure(response)) return null;
+            if (!response.ok) {
+                throw new Error('HTTP ' + response.status);
+            }
+            return response.json();
+        })
+        .catch(error => {
             console.error('Error sending control:', error);
             showAlert('Lỗi gửi lệnh điều khiển', 'error');
         });
@@ -317,8 +350,10 @@ async function uploadFirmware() {
     try {
         const response = await fetch(`${API_URL}/firmware/upload`, {
             method: 'POST',
+            headers: authHeaders(),
             body: formData
         });
+        if (handleAuthFailure(response)) return;
         
         const result = await response.json();
         
@@ -354,7 +389,10 @@ window.uploadFirmware = uploadFirmware;
 
 async function loadFirmwareList() {
     try {
-        const response = await fetch(`${API_URL}/firmware`);
+        const response = await fetch(`${API_URL}/firmware`, {
+            headers: authHeaders()
+        });
+        if (handleAuthFailure(response)) return;
         const firmwareList = await response.json();
         
         const select = document.getElementById('firmwareSelect');
@@ -423,9 +461,10 @@ async function startOTAUpdate() {
     try {
         const response = await fetch(`${API_URL}/devices/${currentDeviceId}/ota`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ version: version })
         });
+        if (handleAuthFailure(response)) return;
         
         const result = await response.json();
         
@@ -473,6 +512,12 @@ function showAlert(message, type = 'info') {
         setTimeout(() => alert.remove(), 300);
     }, 3000);
 }
+
+window.logout = function () {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = './auth.html';
+};
 
 // Handle file selection
 function handleFileSelect(event) {
