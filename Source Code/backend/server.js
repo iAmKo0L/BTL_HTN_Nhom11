@@ -40,6 +40,29 @@ db.serialize(() => {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL UNIQUE,
+      name TEXT,
+      location TEXT,
+      last_seen TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_devices (
+      user_id INTEGER NOT NULL,
+      device_id INTEGER NOT NULL,
+      role TEXT NOT NULL DEFAULT 'owner',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, device_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+    )
+  `);
 });
 
 function dbGet(sql, params = []) {
@@ -58,6 +81,57 @@ function dbRun(sql, params = []) {
       else resolve(this);
     });
   });
+}
+
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+async function upsertDevice(externalDeviceId) {
+  if (!externalDeviceId) return null;
+
+  let row = await dbGet('SELECT * FROM devices WHERE device_id = ?', [externalDeviceId]);
+  if (!row) {
+    const result = await dbRun(
+      'INSERT INTO devices (device_id, name, last_seen) VALUES (?, ?, datetime("now"))',
+      [externalDeviceId, externalDeviceId]
+    );
+    row = await dbGet('SELECT * FROM devices WHERE id = ?', [result.lastID]);
+  } else {
+    await dbRun('UPDATE devices SET last_seen = datetime("now") WHERE id = ?', [row.id]);
+  }
+
+  return row;
+}
+
+async function requireDeviceAccess(req, res, next) {
+  try {
+    const externalDeviceId = req.params.deviceId;
+    const userId = req.user.id;
+
+    const row = await dbGet(
+      `SELECT d.id AS internalDeviceId, d.device_id AS deviceId, d.name, d.location
+       FROM devices d
+       JOIN user_devices ud ON ud.device_id = d.id
+       WHERE d.device_id = ? AND ud.user_id = ?`,
+      [externalDeviceId, userId]
+    );
+
+    if (!row) {
+      return res.status(404).json({ success: false, error: 'Device not found or no permission' });
+    }
+
+    req.device = row;
+    next();
+  } catch (error) {
+    console.error('[API] Device access error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 }
 
 function createToken(user) {
@@ -174,6 +248,46 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ success: true, user: req.user });
 });
 
+app.post('/api/devices/claim', authenticateToken, async (req, res) => {
+  try {
+    const { deviceId, name, location } = req.body;
+
+    if (!deviceId || !String(deviceId).trim()) {
+      return res.status(400).json({ success: false, error: 'deviceId is required' });
+    }
+
+    const normalizedDeviceId = String(deviceId).trim();
+    const device = await upsertDevice(normalizedDeviceId);
+
+    await dbRun(
+      `INSERT OR IGNORE INTO user_devices (user_id, device_id, role)
+       VALUES (?, ?, 'owner')`,
+      [req.user.id, device.id]
+    );
+
+    if ((name && String(name).trim()) || (location && String(location).trim())) {
+      await dbRun(
+        'UPDATE devices SET name = COALESCE(?, name), location = COALESCE(?, location) WHERE id = ?',
+        [
+          name && String(name).trim() ? String(name).trim() : null,
+          location && String(location).trim() ? String(location).trim() : null,
+          device.id
+        ]
+      );
+    }
+
+    const updated = await dbGet(
+      'SELECT device_id AS deviceId, name, location, last_seen AS lastSeen FROM devices WHERE id = ?',
+      [device.id]
+    );
+
+    res.json({ success: true, device: updated });
+  } catch (error) {
+    console.error('[API] Claim device error:', error);
+    res.status(500).json({ success: false, error: 'Không thể thêm thiết bị' });
+  }
+});
+
 // ==================== MQTT Broker ====================
 const mqttServer = net.createServer(aedes.handle);
 
@@ -192,13 +306,14 @@ aedes.on('publish', (packet, client) => {
   if (client) {
     const topic = packet.topic;
     const message = packet.payload.toString();
+    const topicMatch = topic.match(/^device\/([^/]+)\//);
+    const deviceId = topicMatch ? topicMatch[1] : client.id;
     
     try {
       const data = JSON.parse(message);
       
       // Xử lý OTA status
       if (topic.includes('/ota/status')) {
-        const deviceId = client.id;
         console.log(`[OTA] Device ${deviceId}: ${data.status} - ${data.message}`);
         
         // Broadcast OTA status đến WebSocket clients
@@ -213,8 +328,10 @@ aedes.on('publish', (packet, client) => {
       }
       // Lưu trạng thái thiết bị
       else if (topic.startsWith('device/')) {
-        const deviceId = client.id;
         deviceStatus.set(deviceId, { ...data, lastUpdate: new Date() });
+        upsertDevice(deviceId).catch((error) => {
+          console.error('[DB] upsert device failed:', error);
+        });
         
         // Broadcast đến WebSocket clients
         broadcastToWebSocket({
@@ -269,28 +386,10 @@ wss.on('connection', (wsClient) => {
 function handleWebSocketCommand(command, wsClient) {
   switch (command.type) {
     case 'control':
-      // Gửi lệnh điều khiển qua MQTT
-      const controlTopic = `device/${command.deviceId}/control`;
-      const controlMessage = JSON.stringify({
-        relay1: command.relay1,
-        relay2: command.relay2,
-        window: command.window,
-        autoManual: command.autoManual,
-        threshold: command.threshold
-      });
-      
-      aedes.publish({
-        topic: controlTopic,
-        payload: Buffer.from(controlMessage),
-        qos: 1
-      }, (err) => {
-        if (err) {
-          console.error('[MQTT] Error publishing control:', err);
-          wsClient.send(JSON.stringify({ type: 'error', message: 'Failed to send control command' }));
-        } else {
-          console.log(`[MQTT] Control sent to ${command.deviceId}:`, controlMessage);
-        }
-      });
+      wsClient.send(JSON.stringify({
+        type: 'error',
+        message: 'Control via WebSocket is disabled. Use authenticated REST API.'
+      }));
       break;
       
     case 'get_device_status':
@@ -319,26 +418,55 @@ function broadcastToWebSocket(data) {
 // ==================== REST API ====================
 
 // API: Lấy danh sách thiết bị
-app.get('/api/devices', authenticateToken, (req, res) => {
-  const deviceList = Array.from(deviceStatus.entries()).map(([id, data]) => ({
-    deviceId: id,
-    ...data
-  }));
-  res.json(deviceList);
-});
+app.get('/api/devices', authenticateToken, async (req, res) => {
+  try {
+    const rows = await dbAll(
+      `SELECT d.device_id AS deviceId, d.name, d.location, d.last_seen AS lastSeen
+       FROM devices d
+       JOIN user_devices ud ON ud.device_id = d.id
+       WHERE ud.user_id = ?
+       ORDER BY COALESCE(d.last_seen, d.created_at) DESC`,
+      [req.user.id]
+    );
 
-// API: Lấy trạng thái thiết bị
-app.get('/api/devices/:deviceId', authenticateToken, (req, res) => {
-  const status = deviceStatus.get(req.params.deviceId);
-  if (status) {
-    res.json(status);
-  } else {
-    res.status(404).json({ error: 'Device not found' });
+    const deviceList = rows.map((row) => {
+      const live = deviceStatus.get(row.deviceId) || {};
+      return {
+        ...row,
+        ...live
+      };
+    });
+
+    res.json(deviceList);
+  } catch (error) {
+    console.error('[API] devices list error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+// API: Lấy trạng thái thiết bị
+app.get('/api/devices/:deviceId', authenticateToken, requireDeviceAccess, (req, res) => {
+  const status = deviceStatus.get(req.params.deviceId);
+  if (status) {
+    return res.json(status);
+  }
+
+  res.json({
+    deviceId: req.device.deviceId,
+    gasValue: 0,
+    fireValue: 0,
+    relay1State: 0,
+    relay2State: 0,
+    windowState: 0,
+    autoManual: 1,
+    threshold: 4000,
+    ipAddress: '-',
+    lastUpdate: null
+  });
+});
+
 // API: Điều khiển thiết bị
-app.post('/api/devices/:deviceId/control', authenticateToken, (req, res) => {
+app.post('/api/devices/:deviceId/control', authenticateToken, requireDeviceAccess, (req, res) => {
   const { deviceId } = req.params;
   const { relay1, relay2, window, autoManual, threshold } = req.body;
   
@@ -476,7 +604,7 @@ function getServerIP() {
 }
 
 // API: Gửi lệnh OTA update
-app.post('/api/devices/:deviceId/ota', authenticateToken, (req, res) => {
+app.post('/api/devices/:deviceId/ota', authenticateToken, requireDeviceAccess, (req, res) => {
   const { deviceId } = req.params;
   const { version, url } = req.body;
   

@@ -24,6 +24,12 @@
             <select id="deviceSelect">
                 <option value="">-- Chọn thiết bị --</option>
             </select>
+
+            <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                <input type="text" id="claimDeviceId" placeholder="Nhập deviceId (VD: ESP32_abcd1234)" style="padding: 8px; min-width: 240px;">
+                <input type="text" id="claimDeviceName" placeholder="Tên thiết bị (tùy chọn)" style="padding: 8px; min-width: 200px;">
+                <button onclick="claimDevice()">Thêm thiết bị</button>
+            </div>
         </div>
 
         <div class="dashboard">
@@ -150,103 +156,6 @@
         <div id="alertContainer"></div>
     </div>
 
-    <script>
-        // Make sure handleFileSelect is available globally
-        window.handleFileSelect = function(event) {
-            console.log('handleFileSelect called from window', event);
-            const fileInput = event ? event.target : document.getElementById('firmwareFile');
-            if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-                console.log('No file selected');
-                return;
-            }
-            const fileName = fileInput.files[0].name;
-            const fileNameSpan = document.getElementById('fileName');
-            if (fileNameSpan) {
-                fileNameSpan.textContent = fileName;
-                console.log('File name updated:', fileName);
-            }
-        };
-        
-        // Define uploadFirmware inline to ensure it's available immediately
-        window.uploadFirmware = async function() {
-            const API_URL = 'http://localhost:3000/api';
-            const fileInput = document.getElementById('firmwareFile');
-            const versionInput = document.getElementById('firmwareVersion');
-            
-            if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-                if (window.showAlert) {
-                    window.showAlert('Vui lòng chọn file firmware (.bin)', 'warning');
-                } else {
-                    alert('Vui lòng chọn file firmware (.bin)');
-                }
-                return;
-            }
-            
-            const file = fileInput.files[0];
-            if (!file.name.endsWith('.bin')) {
-                if (window.showAlert) {
-                    window.showAlert('File phải có định dạng .bin', 'error');
-                } else {
-                    alert('File phải có định dạng .bin');
-                }
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('firmware', file);
-            if (versionInput && versionInput.value.trim()) {
-                formData.append('version', versionInput.value.trim());
-            }
-            
-            const statusDiv = document.getElementById('otaStatus');
-            if (statusDiv) {
-                statusDiv.className = 'ota-status active';
-                statusDiv.textContent = 'Đang upload firmware...';
-            }
-            
-            try {
-                const response = await fetch(`${API_URL}/firmware/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    if (statusDiv) {
-                        statusDiv.className = 'ota-status active success';
-                        statusDiv.textContent = `Upload thành công! Phiên bản: v${result.metadata.version}`;
-                    }
-                    if (window.showAlert) {
-                        window.showAlert('Upload firmware thành công!', 'success');
-                    }
-                    
-                    // Reset form
-                    fileInput.value = '';
-                    if (versionInput) versionInput.value = '';
-                    const fileNameSpan = document.getElementById('fileName');
-                    if (fileNameSpan) fileNameSpan.textContent = 'Chưa chọn file';
-                    
-                    // Reload firmware list
-                    if (window.loadFirmwareList) {
-                        window.loadFirmwareList();
-                    }
-                } else {
-                    throw new Error(result.error || 'Upload failed');
-                }
-            } catch (error) {
-                if (statusDiv) {
-                    statusDiv.className = 'ota-status active error';
-                    statusDiv.textContent = `Lỗi: ${error.message}`;
-                }
-                if (window.showAlert) {
-                    window.showAlert('Lỗi upload firmware: ' + error.message, 'error');
-                } else {
-                    alert('Lỗi upload firmware: ' + error.message);
-                }
-            }
-        };
-    </script>
     <script src="app.js"></script>
 </body>
 </html>

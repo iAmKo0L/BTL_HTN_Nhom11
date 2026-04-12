@@ -76,7 +76,7 @@ function handleWebSocketMessage(data) {
     
     switch (data.type) {
         case 'device_list':
-            updateDeviceList(data.devices);
+            loadManagedDevices();
             break;
         case 'device_data':
             if (data.deviceId === currentDeviceId) {
@@ -142,7 +142,7 @@ function updateDeviceList(devices) {
     devices.forEach(device => {
         const option = document.createElement('option');
         option.value = device.deviceId;
-        option.textContent = `Thiết bị: ${device.deviceId}`;
+        option.textContent = `Thiết bị: ${device.name || device.deviceId}`;
         select.appendChild(option);
     });
     
@@ -152,6 +152,62 @@ function updateDeviceList(devices) {
         loadDeviceStatus(currentDeviceId);
     }
 }
+
+async function loadManagedDevices() {
+    try {
+        const response = await fetch(`${API_URL}/devices`, {
+            headers: authHeaders()
+        });
+        if (handleAuthFailure(response)) return;
+
+        const devices = await response.json();
+        if (Array.isArray(devices)) {
+            updateDeviceList(devices);
+        }
+    } catch (error) {
+        console.error('Error loading managed devices:', error);
+        showAlert('Lỗi tải danh sách thiết bị', 'error');
+    }
+}
+
+async function claimDevice() {
+    const deviceIdInput = document.getElementById('claimDeviceId');
+    const deviceNameInput = document.getElementById('claimDeviceName');
+
+    const deviceId = deviceIdInput?.value?.trim();
+    const name = deviceNameInput?.value?.trim();
+
+    if (!deviceId) {
+        showAlert('Vui lòng nhập deviceId', 'warning');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/devices/claim`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ deviceId, name })
+        });
+
+        if (handleAuthFailure(response)) return;
+
+        const result = await response.json();
+        if (!result.success) {
+            throw new Error(result.error || 'Claim failed');
+        }
+
+        showAlert('Đã thêm thiết bị thành công', 'success');
+        if (deviceIdInput) deviceIdInput.value = '';
+        if (deviceNameInput) deviceNameInput.value = '';
+
+        await loadManagedDevices();
+    } catch (error) {
+        console.error('Error claiming device:', error);
+        showAlert('Lỗi thêm thiết bị: ' + error.message, 'error');
+    }
+}
+
+window.claimDevice = claimDevice;
 
 document.getElementById('deviceSelect').addEventListener('change', (e) => {
     currentDeviceId = e.target.value;
@@ -249,32 +305,23 @@ function sendControlCommand(command) {
         showAlert('Vui lòng chọn thiết bị', 'warning');
         return;
     }
-    
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'control',
-            deviceId: currentDeviceId,
-            ...command
-        }));
-    } else {
-        // Fallback to HTTP API
-        fetch(`${API_URL}/devices/${currentDeviceId}/control`, {
-            method: 'POST',
-            headers: authHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify(command)
-        })
-        .then(response => {
-            if (handleAuthFailure(response)) return null;
-            if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
-            }
-            return response.json();
-        })
-        .catch(error => {
-            console.error('Error sending control:', error);
-            showAlert('Lỗi gửi lệnh điều khiển', 'error');
-        });
-    }
+
+    fetch(`${API_URL}/devices/${currentDeviceId}/control`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(command)
+    })
+    .then(response => {
+        if (handleAuthFailure(response)) return null;
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+        return response.json();
+    })
+    .catch(error => {
+        console.error('Error sending control:', error);
+        showAlert('Lỗi gửi lệnh điều khiển', 'error');
+    });
 }
 
 function toggleRelay(relayNum) {
@@ -547,6 +594,7 @@ function handleFileSelect(event) {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    loadManagedDevices();
     initWebSocket();
     loadFirmwareList();
     

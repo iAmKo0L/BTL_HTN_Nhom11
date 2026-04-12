@@ -6,6 +6,10 @@ package-lock.json
 backend/firmware/*.bin
 backend/firmware/*.json
 
+# SQLite database
+backend/data/*.db
+backend/data/*.db-*
+
 # Build files
 main_mqtt/build/
 *.bin
