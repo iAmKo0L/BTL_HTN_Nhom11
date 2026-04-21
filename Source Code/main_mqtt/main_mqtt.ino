@@ -87,13 +87,17 @@ bool modeWIFI = MODE_NOWIFI;
 bool tryCbWIFI = MODE_NOWIFI;
 
 // MQTT Configuration
-String mqtt_server_str = "192.168.1.5";  // Thay đổi IP của MQTT broker
+String mqtt_server_str = "192.168.0.220";  // Thay đổi IP của MQTT broker
 const int mqtt_port = 1883;
 String deviceId = "ESP32_" + String((uint32_t)ESP.getEfuseMac(), HEX);
 String mqttDataTopic = "device/" + deviceId + "/data";
 String mqttControlTopic = "device/" + deviceId + "/control";
 String mqttOTATopic = "device/" + deviceId + "/ota";
 String mqttOTAStatusTopic = "device/" + deviceId + "/ota/status";
+String mqttCameraCaptureTopic = "camera/esp32cam/capture";
+
+unsigned long lastCameraTrigger = 0;
+const unsigned long cameraTriggerCooldownMs = 10000;
 
 // OTA Update
 bool otaInProgress = false;
@@ -124,6 +128,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 void reconnectMQTT();
 void handleOTAUpdate(String url);
 void sendOTAStatus(String status, String message);
+void triggerCameraCapture(const char *reason);
 void TaskBuzzer(void *pvParameters);
 
 //-------------------- Khai báo biến freeRTOS ----------------------------
@@ -493,6 +498,27 @@ void sendDatatoMQTT() {
   }
 }
 
+void triggerCameraCapture(const char *reason) {
+  if (!mqttClient.connected()) {
+    return;
+  }
+
+  if (millis() - lastCameraTrigger < cameraTriggerCooldownMs) {
+    return;
+  }
+
+  DynamicJsonDocument doc(256);
+  doc["sourceDeviceId"] = deviceId;
+  doc["reason"] = reason;
+  doc["timestamp"] = millis();
+
+  String payload;
+  serializeJson(doc, payload);
+  mqttClient.publish(mqttCameraCaptureTopic.c_str(), payload.c_str());
+  lastCameraTrigger = millis();
+  Serial.println("Camera capture command sent");
+}
+
 void TaskMQTT(void *pvParameters) {
   delay(2000); // Wait for WiFi connection
   while(1) {
@@ -616,6 +642,7 @@ void TaskMainDisplay(void *pvParameters) {
               if (mqttClient.connected()) {
                 mqttClient.publish((String("device/") + deviceId + "/alert").c_str(), 
                                  "Fire & Gas detected");
+                triggerCameraCapture("fire_and_gas");
               }
             }
             sendNotificationsOnce = 1;
@@ -650,6 +677,7 @@ void TaskMainDisplay(void *pvParameters) {
               if (mqttClient.connected()) {
                 mqttClient.publish((String("device/") + deviceId + "/alert").c_str(), 
                                  "Fire detected");
+                triggerCameraCapture("fire_detected");
               }
             }
             sendNotificationsOnce = 1;

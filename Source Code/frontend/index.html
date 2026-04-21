@@ -47,6 +47,17 @@
                 </div>
             </div>
 
+            <!-- Gas Realtime Chart -->
+            <div class="card chart-card">
+                <h2>📈 Biểu Đồ Gas Realtime</h2>
+                <div class="chart-meta">
+                    <span id="chartRange">30 điểm gần nhất</span>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="gasChart"></canvas>
+                </div>
+            </div>
+
             <!-- Control Panel -->
             <div class="card control-card">
                 <h2>🎛️ Điều Khiển</h2>
@@ -244,6 +255,7 @@
             }
         };
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

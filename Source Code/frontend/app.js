@@ -5,6 +5,11 @@ const API_URL = 'http://localhost:3000/api';
 let ws = null;
 let currentDeviceId = null;
 let deviceStatus = {};
+let gasChart = null;
+let gasCanvas = null;
+let gasCtx = null;
+const gasHistory = [];
+const MAX_GAS_POINTS = 30;
 
 // Initialize WebSocket connection
 function initWebSocket() {
@@ -155,6 +160,7 @@ function updateDeviceData(data) {
     if (data.gasValue !== undefined) {
         document.getElementById('gasValue').textContent = `${data.gasValue} ppm`;
         updateGasProgress(data.gasValue, data.threshold || 4000);
+        appendGasPoint(data.gasValue);
     }
     
     if (data.fireValue !== undefined) {
@@ -203,6 +209,128 @@ function updateDeviceData(data) {
         const date = new Date(data.lastUpdate);
         document.getElementById('lastUpdate').textContent = date.toLocaleString('vi-VN');
     }
+}
+
+function initGasChart() {
+    gasCanvas = document.getElementById('gasChart');
+    if (!gasCanvas) return;
+    gasCtx = gasCanvas.getContext('2d');
+
+    if (typeof Chart !== 'undefined') {
+        gasChart = new Chart(gasCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Nồng độ gas (ppm)',
+                    data: [],
+                    borderColor: '#ff6b35',
+                    backgroundColor: 'rgba(255, 107, 53, 0.15)',
+                    borderWidth: 2,
+                    tension: 0.25,
+                    pointRadius: 2,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    x: {
+                        ticks: {
+                            maxTicksLimit: 6
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'ppm'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true
+                    }
+                }
+            }
+        });
+        return;
+    }
+
+    // Fallback if Chart.js CDN cannot be loaded.
+    renderGasCanvas();
+}
+
+function appendGasPoint(gasValue) {
+    const now = new Date();
+    const label = now.toLocaleTimeString('vi-VN');
+    gasHistory.push({ label, value: Number(gasValue) || 0 });
+    if (gasHistory.length > MAX_GAS_POINTS) {
+        gasHistory.shift();
+    }
+
+    if (gasChart) {
+        gasChart.data.labels = gasHistory.map((point) => point.label);
+        gasChart.data.datasets[0].data = gasHistory.map((point) => point.value);
+        gasChart.update('none');
+        return;
+    }
+
+    renderGasCanvas();
+}
+
+function renderGasCanvas() {
+    if (!gasCtx || !gasCanvas) return;
+
+    const width = gasCanvas.clientWidth || 600;
+    const height = gasCanvas.clientHeight || 260;
+    gasCanvas.width = width;
+    gasCanvas.height = height;
+    gasCtx.clearRect(0, 0, width, height);
+
+    const padding = { top: 20, right: 20, bottom: 30, left: 40 };
+    const chartW = width - padding.left - padding.right;
+    const chartH = height - padding.top - padding.bottom;
+
+    gasCtx.strokeStyle = '#ddd';
+    gasCtx.lineWidth = 1;
+    gasCtx.beginPath();
+    gasCtx.moveTo(padding.left, padding.top);
+    gasCtx.lineTo(padding.left, height - padding.bottom);
+    gasCtx.lineTo(width - padding.right, height - padding.bottom);
+    gasCtx.stroke();
+
+    if (gasHistory.length === 0) {
+        gasCtx.fillStyle = '#888';
+        gasCtx.font = '14px Segoe UI';
+        gasCtx.fillText('Chưa có dữ liệu gas realtime', padding.left + 10, padding.top + 30);
+        return;
+    }
+
+    const values = gasHistory.map((p) => p.value);
+    const maxVal = Math.max(100, ...values);
+    const minVal = 0;
+    const range = Math.max(1, maxVal - minVal);
+
+    gasCtx.strokeStyle = '#ff6b35';
+    gasCtx.lineWidth = 2;
+    gasCtx.beginPath();
+
+    gasHistory.forEach((point, index) => {
+        const x = padding.left + (index / Math.max(1, gasHistory.length - 1)) * chartW;
+        const y = padding.top + ((maxVal - point.value) / range) * chartH;
+        if (index === 0) gasCtx.moveTo(x, y);
+        else gasCtx.lineTo(x, y);
+    });
+
+    gasCtx.stroke();
+    gasCtx.fillStyle = '#ff6b35';
+    gasCtx.font = '12px Segoe UI';
+    gasCtx.fillText(`Max: ${maxVal} ppm`, width - 110, 16);
+    gasCtx.fillText('0', 22, height - padding.bottom + 4);
 }
 
 function updateGasProgress(value, threshold) {
@@ -502,6 +630,7 @@ function handleFileSelect(event) {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    initGasChart();
     initWebSocket();
     loadFirmwareList();
     
