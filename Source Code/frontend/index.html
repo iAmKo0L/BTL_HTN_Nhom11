@@ -7,12 +7,40 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
+    <div id="authContainer" class="auth-container">
+        <div class="auth-card">
+            <h2>🔐 Đăng nhập hệ thống</h2>
+            <div class="auth-tabs">
+                <button id="loginTab" class="auth-tab active" onclick="switchAuthTab('login')">Đăng nhập</button>
+                <button id="registerTab" class="auth-tab" onclick="switchAuthTab('register')">Đăng ký</button>
+            </div>
+
+            <div id="authMessage" class="auth-message"></div>
+
+            <div id="loginForm" class="auth-form">
+                <input type="text" id="loginUsername" placeholder="Tên đăng nhập" autocomplete="username">
+                <input type="password" id="loginPassword" placeholder="Mật khẩu" autocomplete="current-password">
+                <button class="btn-primary auth-submit" onclick="login()">Đăng nhập</button>
+            </div>
+
+            <div id="registerForm" class="auth-form" style="display: none;">
+                <input type="text" id="registerName" placeholder="Họ tên (tùy chọn)" autocomplete="name">
+                <input type="text" id="registerUsername" placeholder="Tên đăng nhập" autocomplete="username">
+                <input type="password" id="registerPassword" placeholder="Mật khẩu (ít nhất 6 ký tự)" autocomplete="new-password">
+                <button class="btn-primary auth-submit" onclick="register()">Đăng ký</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="appContainer" class="container" style="display: none;">
         <header>
             <h1>🔥 Hệ Thống Phát Hiện Khí Gas & Lửa</h1>
-            <div class="connection-status" id="connectionStatus">
-                <span class="status-dot"></span>
-                <span id="statusText">Đang kết nối...</span>
+            <div class="header-actions">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-dot"></span>
+                    <span id="statusText">Đang kết nối...</span>
+                </div>
+                <button class="btn-secondary" onclick="logout()">Đăng xuất</button>
             </div>
         </header>
 
