@@ -8,11 +8,16 @@ const multer = require('multer');
 const fs = require('fs-extra');
 const path = require('path');
 const os = require('os');
+const sqlite3 = require('sqlite3').verbose();
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = 3000;
 const MQTT_PORT = 1883;
 const WS_PORT = 8888;
+const JWT_SECRET = process.env.JWT_SECRET || 'iot_jwt_secret_change_me';
+const JWT_EXPIRES_IN = '7d';
 
 // ==================== Middleware ====================
 app.use(cors());
@@ -27,6 +32,90 @@ fs.ensureDirSync(firmwareDir);
 const cameraDir = path.join(__dirname, 'captures');
 fs.ensureDirSync(cameraDir);
 app.use('/captures', express.static(cameraDir));
+
+const dataDir = path.join(__dirname, 'data');
+fs.ensureDirSync(dataDir);
+
+const dbPath = path.join(dataDir, 'users.db');
+const db = new sqlite3.Database(dbPath);
+
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) reject(err);
+      else resolve(this);
+    });
+  });
+}
+
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+function initAuthDatabase() {
+  db.serialize(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        full_name TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  });
+}
+
+function normalizeUsername(username) {
+  return String(username || '')
+    .trim()
+    .toLowerCase();
+}
+
+function createAuthToken(user) {
+  return jwt.sign(
+    {
+      userId: user.id,
+      username: user.username
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+}
+
+async function authMiddleware(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = authHeader.slice(7);
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = await dbGet('SELECT id, username, full_name FROM users WHERE id = ?', [payload.userId]);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    req.user = {
+      id: user.id,
+      username: user.username,
+      fullName: user.full_name || null
+    };
+
+    next();
+  } catch (_) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+initAuthDatabase();
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(frontendDir, 'index.html'));
@@ -370,7 +459,29 @@ mqttServer.listen(MQTT_PORT, '0.0.0.0', () => {
 // ==================== WebSocket Server ====================
 const wss = new ws.Server({ port: WS_PORT });
 
-wss.on('connection', (wsClient) => {
+wss.on('connection', async (wsClient, req) => {
+  try {
+    const requestUrl = new URL(req.url || '/', 'ws://localhost');
+    const token = requestUrl.searchParams.get('token') || '';
+
+    if (!token) {
+      wsClient.close(1008, 'Unauthorized');
+      return;
+    }
+
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = await dbGet('SELECT id, username FROM users WHERE id = ?', [payload.userId]);
+    if (!user) {
+      wsClient.close(1008, 'Unauthorized');
+      return;
+    }
+
+    wsClient.user = { id: user.id, username: user.username };
+  } catch (err) {
+    wsClient.close(1008, 'Unauthorized');
+    return;
+  }
+
   console.log('[WebSocket] Client connected');
 
   const deviceList = Array.from(deviceStatus.entries()).map(([id, data]) => ({
@@ -494,7 +605,7 @@ app.post(
 );
 
 // API: lấy danh sách thiết bị
-app.get('/api/devices', (req, res) => {
+app.get('/api/devices', authMiddleware, (req, res) => {
   const deviceList = Array.from(deviceStatus.entries()).map(([id, data]) => ({
     deviceId: id,
     ...data
@@ -503,7 +614,7 @@ app.get('/api/devices', (req, res) => {
 });
 
 // API: lấy trạng thái thiết bị
-app.get('/api/devices/:deviceId', (req, res) => {
+app.get('/api/devices/:deviceId', authMiddleware, (req, res) => {
   const status = deviceStatus.get(req.params.deviceId);
   if (status) {
     res.json(status);
@@ -513,7 +624,7 @@ app.get('/api/devices/:deviceId', (req, res) => {
 });
 
 // API: điều khiển thiết bị
-app.post('/api/devices/:deviceId/control', (req, res) => {
+app.post('/api/devices/:deviceId/control', authMiddleware, (req, res) => {
   const { deviceId } = req.params;
   const { relay1, relay2, window, autoManual, threshold } = req.body;
 
@@ -543,7 +654,7 @@ app.post('/api/devices/:deviceId/control', (req, res) => {
 });
 
 // API: gửi lệnh camera capture thủ công
-app.post('/api/camera/capture', (req, res) => {
+app.post('/api/camera/capture', authMiddleware, (req, res) => {
   const reason = req.body.reason || 'manual';
   const source = req.body.source || 'api';
   const payload = publishCaptureCommand(reason, source);
@@ -556,7 +667,7 @@ app.post('/api/camera/capture', (req, res) => {
 });
 
 // API: lấy danh sách ảnh camera
-app.get('/api/camera/captures', (req, res) => {
+app.get('/api/camera/captures', authMiddleware, (req, res) => {
   const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 20, 100));
   res.json({
     total: cameraCaptures.length,
@@ -565,7 +676,7 @@ app.get('/api/camera/captures', (req, res) => {
 });
 
 // API: upload firmware
-app.post('/api/firmware/upload', upload.single('firmware'), (req, res) => {
+app.post('/api/firmware/upload', authMiddleware, upload.single('firmware'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No firmware file uploaded' });
   }
@@ -592,7 +703,7 @@ app.post('/api/firmware/upload', upload.single('firmware'), (req, res) => {
 });
 
 // API: lấy danh sách firmware
-app.get('/api/firmware', (req, res) => {
+app.get('/api/firmware', authMiddleware, (req, res) => {
   const files = fs.readdirSync(firmwareDir);
   const firmwareList = files
     .filter((f) => f.startsWith('metadata_'))
@@ -635,7 +746,7 @@ app.get('/api/firmware/:version', (req, res) => {
 });
 
 // API: gửi lệnh OTA
-app.post('/api/devices/:deviceId/ota', (req, res) => {
+app.post('/api/devices/:deviceId/ota', authMiddleware, (req, res) => {
   const { deviceId } = req.params;
   const { version, url } = req.body;
 
@@ -675,6 +786,86 @@ app.post('/api/devices/:deviceId/ota', (req, res) => {
       }
     }
   );
+});
+
+// ==================== Auth APIs ====================
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+    const password = String(req.body.password || '');
+    const fullName = String(req.body.fullName || '').trim();
+
+    if (!/^[a-z0-9_.-]{3,32}$/.test(username)) {
+      return res.status(400).json({ error: 'Username phải từ 3-32 ký tự (a-z, 0-9, _, ., -)' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password phải có ít nhất 6 ký tự' });
+    }
+
+    const existingUser = await dbGet('SELECT id FROM users WHERE username = ?', [username]);
+    if (existingUser) {
+      return res.status(409).json({ error: 'Username đã tồn tại' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const result = await dbRun(
+      'INSERT INTO users (username, password_hash, full_name) VALUES (?, ?, ?)',
+      [username, passwordHash, fullName || null]
+    );
+
+    const user = {
+      id: result.lastID,
+      username,
+      fullName: fullName || null
+    };
+
+    const token = createAuthToken(user);
+    res.status(201).json({ success: true, token, user });
+  } catch (err) {
+    console.error('[AUTH] register error:', err);
+    res.status(500).json({ error: 'Register failed' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+    const password = String(req.body.password || '');
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Thiếu username hoặc password' });
+    }
+
+    const userRow = await dbGet('SELECT id, username, full_name, password_hash FROM users WHERE username = ?', [
+      username
+    ]);
+
+    if (!userRow) {
+      return res.status(401).json({ error: 'Sai username hoặc password' });
+    }
+
+    const isValidPassword = await bcrypt.compare(password, userRow.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Sai username hoặc password' });
+    }
+
+    const user = {
+      id: userRow.id,
+      username: userRow.username,
+      fullName: userRow.full_name || null
+    };
+
+    const token = createAuthToken(user);
+    res.json({ success: true, token, user });
+  } catch (err) {
+    console.error('[AUTH] login error:', err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.get('/api/auth/me', authMiddleware, (req, res) => {
+  res.json({ success: true, user: req.user });
 });
 
 // ==================== Start HTTP ====================
