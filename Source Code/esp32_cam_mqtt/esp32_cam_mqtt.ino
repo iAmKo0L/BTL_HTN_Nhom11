@@ -138,7 +138,7 @@ bool initCamera() {
       s->set_saturation(s, -2);
     }
 
-    s->set_framesize(s, FRAMESIZE_QQVGA);
+    s->set_framesize(s, FRAMESIZE_VGA);
   }
 
   cameraInitialized = true;
@@ -296,7 +296,7 @@ void setup() {
 
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
-
+  mqttClient.setBufferSize(32768);
   Serial.println("ESP32-CAM firmware ready (camera idle until capture request)");
 }
 
