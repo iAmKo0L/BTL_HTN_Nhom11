@@ -17,7 +17,7 @@ Dự án gồm 3 phần chính:
 | 2 | Đỗ Đức Cảnh | B22DCCN086 | Module điều khiển camera tự động chụp ảnh hiện trường có lửa |
 | 3 | Trần Quang Huy | B22DCCN397 | Module cập nhật firmware từ xa & thống kê khí gas realtime |
 | 4 | Trần Quang Huy | B22DCCN398 | Module giao tiếp thiết bị qua MQTT + WebSocket |
-| 5 | Nguyễn Việt Quang | B22DCCN620 | Module điều khiển relay/sửa sổ & xác thực người dùng |
+| 5 | Nguyễn Việt Quang | B22DCCN650 | Module điều khiển relay/sửa sổ & xác thực người dùng |
 
 ## Tính năng hiện tại
 
