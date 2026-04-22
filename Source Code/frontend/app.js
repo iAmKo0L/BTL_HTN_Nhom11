@@ -1,6 +1,7 @@
 // WebSocket connection
 const WS_URL = 'ws://localhost:8888';
 const API_URL = 'http://localhost:3000/api';
+const AUTH_TOKEN_KEY = 'iot_auth_token';
 
 let ws = null;
 let currentDeviceId = null;
@@ -8,12 +9,173 @@ let deviceStatus = {};
 let gasChart = null;
 let gasCanvas = null;
 let gasCtx = null;
+let authToken = localStorage.getItem(AUTH_TOKEN_KEY);
+let dashboardInitialized = false;
 const gasHistory = [];
 const MAX_GAS_POINTS = 30;
 
+function setAuthToken(token) {
+    authToken = token;
+    if (token) {
+        localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+}
+
+function setAuthMessage(message, type = 'info') {
+    const el = document.getElementById('authMessage');
+    if (!el) return;
+
+    if (!message) {
+        el.className = 'auth-message';
+        el.textContent = '';
+        return;
+    }
+
+    el.className = `auth-message ${type}`;
+    el.textContent = message;
+}
+
+function switchAuthTab(tab) {
+    const loginTab = document.getElementById('loginTab');
+    const registerTab = document.getElementById('registerTab');
+    const loginForm = document.getElementById('loginForm');
+    const registerForm = document.getElementById('registerForm');
+
+    if (tab === 'register') {
+        registerTab.classList.add('active');
+        loginTab.classList.remove('active');
+        registerForm.style.display = 'flex';
+        loginForm.style.display = 'none';
+    } else {
+        loginTab.classList.add('active');
+        registerTab.classList.remove('active');
+        loginForm.style.display = 'flex';
+        registerForm.style.display = 'none';
+    }
+
+    setAuthMessage('');
+}
+
+function showAuthScreen() {
+    const authContainer = document.getElementById('authContainer');
+    const appContainer = document.getElementById('appContainer');
+    if (authContainer) authContainer.style.display = 'flex';
+    if (appContainer) appContainer.style.display = 'none';
+}
+
+function showAppScreen() {
+    const authContainer = document.getElementById('authContainer');
+    const appContainer = document.getElementById('appContainer');
+    if (authContainer) authContainer.style.display = 'none';
+    if (appContainer) appContainer.style.display = 'block';
+}
+
+async function apiFetch(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (authToken) {
+        headers.set('Authorization', `Bearer ${authToken}`);
+    }
+
+    const response = await fetch(`${API_URL}${path}`, {
+        ...options,
+        headers
+    });
+
+    if (response.status === 401) {
+        setAuthToken(null);
+        if (ws) {
+            ws.onclose = null;
+            ws.close();
+            ws = null;
+        }
+        showAuthScreen();
+        setAuthMessage('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.', 'error');
+        throw new Error('Unauthorized');
+    }
+
+    return response;
+}
+
+async function login() {
+    const username = document.getElementById('loginUsername')?.value?.trim();
+    const password = document.getElementById('loginPassword')?.value || '';
+
+    if (!username || !password) {
+        setAuthMessage('Vui lòng nhập username và password.', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'Đăng nhập thất bại');
+        }
+
+        setAuthToken(result.token);
+        setAuthMessage('Đăng nhập thành công!', 'success');
+        await startDashboard();
+    } catch (error) {
+        setAuthMessage(error.message || 'Đăng nhập thất bại', 'error');
+    }
+}
+
+async function register() {
+    const fullName = document.getElementById('registerName')?.value?.trim() || '';
+    const username = document.getElementById('registerUsername')?.value?.trim() || '';
+    const password = document.getElementById('registerPassword')?.value || '';
+
+    if (!username || !password) {
+        setAuthMessage('Vui lòng nhập username và password.', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, fullName })
+        });
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'Đăng ký thất bại');
+        }
+
+        setAuthToken(result.token);
+        setAuthMessage('Đăng ký thành công!', 'success');
+        await startDashboard();
+    } catch (error) {
+        setAuthMessage(error.message || 'Đăng ký thất bại', 'error');
+    }
+}
+
+function logout() {
+    setAuthToken(null);
+    if (ws) {
+        ws.onclose = null;
+        ws.close();
+        ws = null;
+    }
+    location.reload();
+}
+
+window.switchAuthTab = switchAuthTab;
+window.login = login;
+window.register = register;
+window.logout = logout;
+
 // Initialize WebSocket connection
 function initWebSocket() {
-    ws = new WebSocket(WS_URL);
+    if (!authToken) return;
+    ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(authToken)}`);
     
     ws.onopen = () => {
         console.log('WebSocket connected');
@@ -35,7 +197,9 @@ function initWebSocket() {
         console.log('WebSocket disconnected');
         updateConnectionStatus(false);
         // Reconnect after 3 seconds
-        setTimeout(initWebSocket, 3000);
+        if (authToken) {
+            setTimeout(initWebSocket, 3000);
+        }
     };
 }
 
@@ -145,7 +309,7 @@ document.getElementById('deviceSelect').addEventListener('change', (e) => {
 
 async function loadDeviceStatus(deviceId) {
     try {
-        const response = await fetch(`${API_URL}/devices/${deviceId}`);
+        const response = await apiFetch(`/devices/${deviceId}`);
         const data = await response.json();
         updateDeviceData(data);
     } catch (error) {
@@ -361,7 +525,7 @@ function sendControlCommand(command) {
         }));
     } else {
         // Fallback to HTTP API
-        fetch(`${API_URL}/devices/${currentDeviceId}/control`, {
+        apiFetch(`/devices/${currentDeviceId}/control`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(command)
@@ -443,7 +607,7 @@ async function uploadFirmware() {
     }
     
     try {
-        const response = await fetch(`${API_URL}/firmware/upload`, {
+        const response = await apiFetch('/firmware/upload', {
             method: 'POST',
             body: formData
         });
@@ -482,7 +646,7 @@ window.uploadFirmware = uploadFirmware;
 
 async function loadFirmwareList() {
     try {
-        const response = await fetch(`${API_URL}/firmware`);
+        const response = await apiFetch('/firmware');
         const firmwareList = await response.json();
         
         const select = document.getElementById('firmwareSelect');
@@ -549,7 +713,7 @@ async function startOTAUpdate() {
     }
     
     try {
-        const response = await fetch(`${API_URL}/devices/${currentDeviceId}/ota`, {
+        const response = await apiFetch(`/devices/${currentDeviceId}/ota`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ version: version })
@@ -628,19 +792,47 @@ function handleFileSelect(event) {
     }
 }
 
-// Initialize on page load
-document.addEventListener('DOMContentLoaded', () => {
-    initGasChart();
-    initWebSocket();
+async function startDashboard() {
+    showAppScreen();
+    setAuthMessage('');
+
+    if (!dashboardInitialized) {
+        initGasChart();
+
+        const fileInput = document.getElementById('firmwareFile');
+        if (fileInput) {
+            fileInput.addEventListener('change', function(e) {
+                console.log('File input change event (backup handler)');
+                handleFileSelect(e);
+            });
+        }
+
+        dashboardInitialized = true;
+    }
+
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+        initWebSocket();
+    }
+
     loadFirmwareList();
-    
-    // Also setup file input listener as backup
-    const fileInput = document.getElementById('firmwareFile');
-    if (fileInput) {
-        fileInput.addEventListener('change', function(e) {
-            console.log('File input change event (backup handler)');
-            handleFileSelect(e);
-        });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', async () => {
+    if (!authToken) {
+        showAuthScreen();
+        return;
+    }
+
+    try {
+        const response = await apiFetch('/auth/me');
+        if (!response.ok) {
+            throw new Error('Auth check failed');
+        }
+        await startDashboard();
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        showAuthScreen();
     }
 });
 
